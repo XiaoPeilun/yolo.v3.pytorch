@@ -33,12 +33,15 @@ def parse_cfg(cfg_file):
 
 def predict_transform(prediction, dim, anchors, num_classes):
     '''
-    
-    输入: prediction - [batch_size, number of input channel, height, width]
-                       整个网络输出的结果
-          dim - 训练图像的大小，一般为 416
-          anchors - 类似 [(10, 13), (16, 30), (33, 23)]
-          num_classes - 最后分类的类别各数
+    输入: prediction - [batch_size, 特征图通道数, 特征图的高 , 特征图的宽]
+                       比如 [1, 255, 13, 13], 这个 255 = 85x3, 因为每个
+                       特征图上的点有三个不同尺寸的检测框。 13x13 大概就类似
+                       把一张图划分成 169 个正方形部分。
+          dim - 训练图像的大小，一般yolo v3 固定为 416
+          anchors - 类似 [(10, 13), (16, 30), (33, 23)], 这些大小是相对于
+                    dim x dim 而言的
+          num_classes - 分类的类别个数
+    输出： prediction - [batch_size, 检测框的个数, 85]
     '''
 
     batch_size = prediction.size(0)
@@ -48,9 +51,6 @@ def predict_transform(prediction, dim, anchors, num_classes):
     grid_size = dim // stride 
     bbox_attrs = 5 + num_classes
     num_anchors = len(anchors)
-
-    # print(stride)  # 8
-    # print(anchors) # [(10, 13), (16, 30), (33, 23)]
 
     prediction = prediction.view(batch_size, bbox_attrs*num_anchors, grid_size*grid_size)
     prediction = prediction.transpose(1,2).contiguous()
@@ -74,12 +74,11 @@ def predict_transform(prediction, dim, anchors, num_classes):
 
     prediction[:,:,:2] += x_y_offset
 
-    #log space transform height and the width
     anchors = torch.FloatTensor(anchors)
 
     anchors = anchors.repeat(grid_size*grid_size, 1).unsqueeze(0)
 
-    prediction[:,:,2:4] = torch.exp(prediction[:,:,2:4])*anchors
+    prediction[:,:,2:4] = torch.exp(prediction[:,:,2:4]) * anchors
 
     prediction[:,:,5: 5+num_classes] = torch.sigmoid((prediction[:,:, 5 : 5+num_classes]))
 
@@ -99,8 +98,7 @@ def unique(tensor):
 
 def bbox_iou(box1, boxes2):
     """
-    Returns the IoU of two bounding boxes 
-    
+    返回 box1 检测框 和 boxes2 检测框组的交并比
     
     """
     #Get the coordinates of bounding boxes
@@ -126,7 +124,18 @@ def bbox_iou(box1, boxes2):
 
 
 def non_maximum_suppression(prediction, confidence, num_classes, nms_conf = 0.4):
-    
+    '''
+    非极大值抑制。
+    输入：  prediction   所有预测的检测框，[batch_size, 10647, 85]
+            confidence  判断是否包含检测物体的阈值
+            num_classes  一共有多少个类别，这里是80个
+            nms_conf    判断两个检测框重合超过多少就算是重复的阈值
+    输出：  output  一个 list，一个 list 中包含多个确认的检测框，每个检测框
+                    有8位，第一位表示是这个batch中的第几个图像，剩下7位就是
+                    4位表示位置信息，1位表示属于分类物体的置信程度，1位表示
+                    属于可能性最大的类的概率，1位表示属于可能性最大的那个类
+                    的标号。
+    '''
     conf_mask = (prediction[:,:,4] > confidence).float().unsqueeze(2)
     prediction = prediction * conf_mask
     
@@ -198,7 +207,7 @@ def non_maximum_suppression(prediction, confidence, num_classes, nms_conf = 0.4)
             # 生成一个等长的带有 batch 序号的 tensor
             batch_ind = image_pred_class.new(image_pred_class.size(0), 1).fill_(ind)
             
-            # 合成一个元组
+            # 合成一个 tuple
             seq = batch_ind, image_pred_class
             
             if not write:
@@ -212,20 +221,12 @@ def non_maximum_suppression(prediction, confidence, num_classes, nms_conf = 0.4)
     return output
 
 
-
-def get_test_input():
-    img = cv2.imread("dog-cycle-car.png")
-    img = cv2.resize(img, (416,416))          # Resize to the input dimension
-    img_ = img[:,:,::-1].transpose((2,0,1))   # BGR -> RGB | H X W C -> C X H X W 
-    img_ = img_[np.newaxis,:,:,:]/255.0       # Add a channel at 0 (for batch) | Normalise
-    img_ = torch.from_numpy(img_).float()     # Convert to float
-    # img_ = torch.autograd.Variable(img_)      # Convert to Variable
-    return img_
-
-
-
 def letterbox_image(img, out_dim):
-    '''resize image with unchanged aspect ratio using padding'''
+    '''
+    调整输入图片 img 的分辨率到 （out_dim，out_dim）大小。
+    不同于一般的 resize，这个函数保留原图片的原始比例，对于额外空白的地方用灰色来填补。
+    '''
+
     img_w, img_h = img.shape[1], img.shape[0]
     w, h = out_dim
     new_w = int(img_w * min(w/img_w, h/img_h))
@@ -239,10 +240,11 @@ def letterbox_image(img, out_dim):
     return canvas
 
 def prep_image(img, input_dim):
-    """
-    Prepare image for inputting to the neural network. 
-    Returns a Variable 
-    """
+    '''
+    将输入图片转换成网络需要输入的格式 cv2 -> tensor
+    首先 cv2 中 图片是按 BGR 顺序排练的，首先转换到 RGB，
+    然后压缩到 0-1 范围内，再转化为 tensor。
+    '''
 
     # img = cv2.resize(img, (input_dim, input_dim))
     img = letterbox_image(img, (input_dim, input_dim))
@@ -256,6 +258,10 @@ def load_classes(namesfile):
     return names
 
 def draw_bounding_box(x, results, colors, classes):
+    '''
+    在给定的图像 x 上根据 results 画检测框，根据提供的 classes 找到每个框对应的类别，
+    随机根据 colors 设置选择检测框颜色。
+    '''
     c1 = tuple(x[1:3].int())
     c2 = tuple(x[3:5].int())
     img = results[int(x[0])]

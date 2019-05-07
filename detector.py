@@ -13,10 +13,6 @@ import pickle as pkl
 from darknet import DarkNet
 
 def arg_parse():
-    """
-
-    
-    """
     parser = argparse.ArgumentParser(description='YOLO v3 Detection Module')
     parser.add_argument("--images", help = "Image / Directory containing images to perform detection upon",
                         default = "images", type = str)
@@ -82,8 +78,10 @@ output = 0
 for i, batch in enumerate(im_batches):
     start = time.time()
     with torch.no_grad():
-        # prediction = model(torch.autograd.Variable(batch))
         prediction = model(batch)
+
+    # print(prediction.shape, 'prediction')
+    # torch.Size([1, 10647, 85])
 
     prediction = utils.non_maximum_suppression(prediction, args.confidence, num_classes, nms_conf = args.nms_thresh)
     end = time.time()
@@ -96,7 +94,7 @@ for i, batch in enumerate(im_batches):
             print("----------------------------------------------------------")
         continue
 
-    prediction[:, 0] += i * args.batch_size    #transform the atribute from index in batch to index in imlist 
+    prediction[:, 0] += i * args.batch_size
 
     if isinstance(output, int):
         output = prediction
@@ -126,9 +124,11 @@ output[:,1:5] /= scaling_factor
 for i in range(output.shape[0]):
     output[i, [1,3]] = torch.clamp(output[i, [1,3]], 0.0, im_dim_list[i,0])
     output[i, [2,4]] = torch.clamp(output[i, [2,4]], 0.0, im_dim_list[i,1])
-    
+# 以上处理后的 output 的检测框的坐标就是在原始未 resize 的图像中的坐标
+
 colors = pkl.load(open("pallete", "rb"))
 
+# 在原始图像上画图像并且保存到指定文件夹
 list(map(lambda x: utils.draw_bounding_box(x, loaded_ims, colors, classes), output))
 names = [os.path.join(args.det, 'det_' + os.path.basename(i)) for i in imlist]
 list(map(cv2.imwrite, names, loaded_ims))
